@@ -250,6 +250,16 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
 
                                   for (size_t i = 0; i < s.size();) {
                                       if (s[i] == '\\') {
+                                          if (match_macro(s, i, "vspace")) {
+                                              size_t p = i + std::string("\\vspace").size();
+                                              if (p < s.size() && s[p] == '*') ++p;
+                                              size_t end_p = p;
+                                              if (skip_braced_groups(s, p, 1, end_p)) {
+                                                  i = end_p;
+                                                  continue;
+                                              }
+                                          }
+
                                           if (match_macro(s, i, "addcontentsline")) {
                                               size_t p = i + std::string("\\addcontentsline").size();
                                               if (p < s.size() && s[p] == '*') ++p;
@@ -283,7 +293,8 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                               "cleardoublepage",
                                               "noindent",
                                               "centering",
-                                              "phantomsection"
+                                              "phantomsection",
+                                              "medskip"
                                           };
                                           bool skipped_zero = false;
                                           for (const auto& name : zero_arg_noise) {
@@ -878,9 +889,9 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                                                                                                                      ".toc-page ol { list-style-type: none; padding-left: 1.2em; }\n"
                                                                                                                                                                                                                                                      ".toc-page > ol { padding-left: 0; }\n"
                                                                                                                                                                                                                                                      ".toc-page li { margin-bottom: 0.4em; }\n"
-                                                                                                                                                                                                                                                     ".illustration { margin: 1.4em auto; padding: 0 0.6em; text-align: center; }\n"
-                                                                                                                                                                                                                                                     ".illustration img { display: block; max-width: 92%; width: auto; height: auto; margin: 0 auto; }\n"
-                                                                                                                                                                                                                                                     ".illustration figcaption { text-indent: 0; margin-top: 0.5em; font-size: 0.9em; font-style: italic; }\n"
+                                                                                                                                                                                                                                                     ".illustration { display: block; clear: both; width: 100%; box-sizing: border-box; margin: 1.4em auto; padding: 0 0.6em; text-align: center; }\n"
+                                                                                                                                                                                                                                                     ".illustration img { display: block; clear: both; max-width: 92%; width: auto; height: auto; margin: 0 auto; }\n"
+                                                                                                                                                                                                                                                     ".illustration figcaption { display: block; clear: both; width: 100%; text-indent: 0; margin-top: 0.5em; text-align: center; font-size: 0.9em; font-style: italic; }\n"
                                                                                                                                                                                                                                                      ".footnotes { margin-top: 2em; font-size: 0.9em; }\n");
 
                                                                                                                                                                                                                                           std::ostringstream title_html;
