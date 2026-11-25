@@ -19,6 +19,12 @@ struct Footnote {
     std::string raw_tex;
 };
 
+struct BibEntry {
+    int number = 0;
+    std::string key;
+    std::string raw_tex;
+};
+
 struct ImageAsset {
     std::string id;
     std::string src_path;
@@ -45,6 +51,7 @@ struct Book {
     std::vector<Chapter> loose_chapters;
     std::vector<Part> parts;
     std::vector<ImageAsset> images;
+    std::vector<BibEntry> bib_entries;
 };
 
 static std::string read_file(const fs::path& p) {
@@ -198,23 +205,36 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
     return false;
                               }
 
-                              static void skip_optional_brackets(const std::string& s, size_t& pos) {
-                                  while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) {
-                                      ++pos;
+                              static bool read_optional_brackets(const std::string& s, size_t& pos, std::string& opt_inside) {
+                                  opt_inside.clear();
+                                  size_t p = pos;
+                                  while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) {
+                                      ++p;
                                   }
-                                  if (pos < s.size() && s[pos] == '[') {
+                                  if (p < s.size() && s[p] == '[') {
                                       int depth = 0;
-                                      for (size_t i = pos; i < s.size(); ++i) {
-                                          if (s[i] == '[') ++depth;
-                                          else if (s[i] == ']') {
+                                      for (size_t i = p; i < s.size(); ++i) {
+                                          if (s[i] == '[') {
+                                              if (depth > 0) opt_inside.push_back(s[i]);
+                                              ++depth;
+                                          } else if (s[i] == ']') {
                                               --depth;
                                               if (depth == 0) {
                                                   pos = i + 1;
-                                                  return;
+                                                  return true;
                                               }
+                                              opt_inside.push_back(s[i]);
+                                          } else if (depth > 0) {
+                                              opt_inside.push_back(s[i]);
                                           }
                                       }
                                   }
+                                  return false;
+                              }
+
+                              static void skip_optional_brackets(const std::string& s, size_t& pos) {
+                                  std::string dummy;
+                                  read_optional_brackets(s, pos, dummy);
                               }
 
                               static bool skip_braced_groups(const std::string& s, size_t pos, int count, size_t& end_pos) {
@@ -250,6 +270,34 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                   size_t b = s.size();
                                   while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
                                   return s.substr(a, b - a);
+                              }
+
+                              static std::string strip_bibitem_macros(const std::string& s) {
+                                  std::string out;
+                                  out.reserve(s.size());
+
+                                  for (size_t i = 0; i < s.size();) {
+                                      if (s[i] == '\\' && match_macro(s, i, "bibitem")) {
+                                          size_t p = i + std::string("\\bibitem").size();
+                                          skip_optional_brackets(s, p);
+                                          while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) {
+                                              ++p;
+                                          }
+                                          std::string dummy;
+                                          size_t after_key = p;
+                                          if (p < s.size() && s[p] == '{' && read_braced_group(s, p, dummy, after_key)) {
+                                              while (after_key < s.size() &&
+                                                  (s[after_key] == ' ' || s[after_key] == '\t' ||
+                                                  s[after_key] == '\r' || s[after_key] == '\n')) {
+                                                  ++after_key;
+                                                  }
+                                                  i = after_key;
+                                              continue;
+                                          }
+                                      }
+                                      out.push_back(s[i++]);
+                                  }
+                                  return trim_spaces(out);
                               }
 
                               static bool match_env_tag_at(const std::string& s, size_t pos,
@@ -513,6 +561,17 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                    return rel_href;
                                                                                                                                }
 
+                                                                                                                               static const BibEntry* find_bib_entry(const Book* book, const std::string& key) {
+                                                                                                                                   if (book == nullptr) return nullptr;
+                                                                                                                                   std::string clean_key = trim_spaces(key);
+                                                                                                                                   for (const auto& entry : book->bib_entries) {
+                                                                                                                                       if (entry.key == clean_key) {
+                                                                                                                                           return &entry;
+                                                                                                                                       }
+                                                                                                                                   }
+                                                                                                                                   return nullptr;
+                                                                                                                               }
+
                                                                                                                                static std::string latex_inline_to_xhtml(const std::string& s,
                                                                                                                                                                         const std::string& chapter_id,
                                                                                                                                                                         std::vector<Footnote>* footnotes_out,
@@ -574,6 +633,10 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                if (p < s.size() && s[p] == '*') ++p;
                                                                                                                                                skip_optional_brackets(s, p);
                                                                                                                                            }
+                                                                                                                                           std::string cite_note;
+                                                                                                                                           if (cmd == "cite") {
+                                                                                                                                               read_optional_brackets(s, p, cite_note);
+                                                                                                                                           }
                                                                                                                                            while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) {
                                                                                                                                                ++p;
                                                                                                                                            }
@@ -586,6 +649,27 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                    out += "<figure class=\"illustration\"><img src=\"" + xml_escape(rel_href) +
                                                                                                                                                    "\" alt=\"\" /></figure>";
                                                                                                                                                    i = after;
+                                                                                                                                                   continue;
+                                                                                                                                               }
+                                                                                                                                           }
+
+                                                                                                                                           if (cmd == "cite" && p < s.size() && s[p] == '{') {
+                                                                                                                                               std::string cite_key;
+                                                                                                                                               size_t after_key = p;
+                                                                                                                                               if (read_braced_group(s, p, cite_key, after_key)) {
+                                                                                                                                                   std::string clean_key = trim_spaces(cite_key);
+                                                                                                                                                   const BibEntry* entry = find_bib_entry(book_out, clean_key);
+                                                                                                                                                   std::string note_html;
+                                                                                                                                                   if (!trim_spaces(cite_note).empty()) {
+                                                                                                                                                       note_html = ", " + latex_inline_to_xhtml(trim_spaces(cite_note), chapter_id, footnotes_out, book_out);
+                                                                                                                                                   }
+                                                                                                                                                   if (entry != nullptr) {
+                                                                                                                                                       out += "<a href=\"bibliography.xhtml#bib-" + xml_escape(clean_key) +
+                                                                                                                                                       "\">[" + std::to_string(entry->number) + note_html + "]</a>";
+                                                                                                                                                   } else {
+                                                                                                                                                       out += "[" + xml_escape(clean_key) + note_html + "]";
+                                                                                                                                                   }
+                                                                                                                                                   i = after_key;
                                                                                                                                                    continue;
                                                                                                                                                }
                                                                                                                                            }
@@ -804,8 +888,93 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                                                                                        return body.str();
                                                                                                                                                                                                                                                                 }
 
-                                                                                                                                                                                                                                                                static Book parse_book(const std::string& flat_tex) {
+                                                                                                                                                                                                                                                                // Предварительно извлекаем \bibitem{id} из окружения thebibliography (куда \input{bibitems} уже раскрыт),
+                                                                                                                                                                                                                                                                // очищаем записи от самих макросов \bibitem{...} и удаляем блок thebibliography до разбора глав.
+                                                                                                                                                                                                                                                                static std::string extract_and_parse_bibliography(const std::string& flat_tex,
+                                                                                                                                                                                                                                                                std::vector<BibEntry>& out_entries) {
+                                                                                                                                                                                                                                                                out_entries.clear();
+                                                                                                                                                                                                                                                                std::string out;
+                                                                                                                                                                                                                                                                out.reserve(flat_tex.size());
+
+                                                                                                                                                                                                                                                                int bib_num = 0;
+
+                                                                                                                                                                                                                                                                for (size_t i = 0; i < flat_tex.size();) {
+                                                                                                                                                                                                                                                                size_t after_begin = i;
+                                                                                                                                                                                                                                                                if (match_env_tag_at(flat_tex, i, "begin", "thebibliography", after_begin)) {
+                                                                                                                                                                                                                                                                size_t p = after_begin;
+                                                                                                                                                                                                                                                                // Пропускаем необязательный аргумент ширины метки, например {999}
+                                                                                                                                                                                                                                                                while (p < flat_tex.size() && std::isspace(static_cast<unsigned char>(flat_tex[p]))) {
+                                                                                                                                                                                                                                                                ++p;
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                if (p < flat_tex.size() && flat_tex[p] == '{') {
+                                                                                                                                                                                                                                                                std::string dummy;
+                                                                                                                                                                                                                                                                size_t after_width = p;
+                                                                                                                                                                                                                                                                if (read_braced_group(flat_tex, p, dummy, after_width)) {
+                                                                                                                                                                                                                                                                p = after_width;
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                size_t end_pos = find_env_end(flat_tex, p, "thebibliography");
+                                                                                                                                                                                                                                                                size_t block_end = (end_pos == std::string::npos) ? flat_tex.size() : end_pos;
+                                                                                                                                                                                                                                                                std::string bib_body = flat_tex.substr(p, block_end - p);
+
+                                                                                                                                                                                                                                                                struct RawItem {
+                                                                                                                                                                                                                                                                std::string key;
+                                                                                                                                                                                                                                                                size_t text_start;
+                                                                                                                                                                                                                                                                size_t text_end;
+                                                                                                                                                                                                                                                                };
+                                                                                                                                                                                                                                                                std::vector<RawItem> items;
+
+                                                                                                                                                                                                                                                                for (size_t k = 0; k < bib_body.size(); ++k) {
+                                                                                                                                                                                                                                                                if (bib_body[k] == '\\' && match_macro(bib_body, k, "bibitem")) {
+                                                                                                                                                                                                                                                                size_t q = k + std::string("\\bibitem").size();
+                                                                                                                                                                                                                                                                skip_optional_brackets(bib_body, q);
+                                                                                                                                                                                                                                                                while (q < bib_body.size() && std::isspace(static_cast<unsigned char>(bib_body[q]))) {
+                                                                                                                                                                                                                                                                ++q;
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                std::string key_raw;
+                                                                                                                                                                                                                                                                size_t after_key = q;
+                                                                                                                                                                                                                                                                if (q < bib_body.size() && bib_body[q] == '{' &&
+                                                                                                                                                                                                                                                                read_braced_group(bib_body, q, key_raw, after_key)) {
+                                                                                                                                                                                                                                                                if (!items.empty()) {
+                                                                                                                                                                                                                                                                items.back().text_end = k;
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                items.push_back(RawItem{trim_spaces(key_raw), after_key, bib_body.size()});
+                                                                                                                                                                                                                                                                k = after_key - 1;
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                if (!items.empty()) {
+                                                                                                                                                                                                                                                                items.back().text_end = bib_body.size();
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                for (const auto& item : items) {
+                                                                                                                                                                                                                                                                if (item.key.empty()) continue;
+                                                                                                                                                                                                                                                                std::string cleaned_txt = strip_bibitem_macros(
+                                                                                                                                                                                                                                                                bib_body.substr(item.text_start, item.text_end - item.text_start));
+                                                                                                                                                                                                                                                                ++bib_num;
+                                                                                                                                                                                                                                                                out_entries.push_back(BibEntry{bib_num, item.key, cleaned_txt});
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                if (end_pos != std::string::npos) {
+                                                                                                                                                                                                                                                                size_t after_end = end_pos;
+                                                                                                                                                                                                                                                                match_env_tag_at(flat_tex, end_pos, "end", "thebibliography", after_end);
+                                                                                                                                                                                                                                                                i = after_end;
+                                                                                                                                                                                                                                                                } else {
+                                                                                                                                                                                                                                                                i = flat_tex.size();
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                continue;
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                out.push_back(flat_tex[i++]);
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                return out;
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                static Book parse_book(const std::string& flat_tex, std::vector<BibEntry>&& bib_entries) {
                                                                                                                                                                                                                                                                 Book book;
+                                                                                                                                                                                                                                                                book.bib_entries = std::move(bib_entries);
                                                                                                                                                                                                                                                                 bool has_part = false;
                                                                                                                                                                                                                                                                 bool in_chapter = false;
                                                                                                                                                                                                                                                                 Chapter current_chapter;
@@ -929,6 +1098,7 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                                                                                                                                 "h1, h2 { text-align: left; margin-top: 1.2em; margin-bottom: 0.6em; }\n"
                                                                                                                                                                                                                                                                 "p { text-indent: 1.2em; margin-top: 0; margin-bottom: 0.6em; }\n"
                                                                                                                                                                                                                                                                 ".quotation { margin: 1em 4em; font-size: 1em; }\n"
+                                                                                                                                                                                                                                                                ".bib-item { text-indent: 0; margin-bottom: 0.5em; }\n"
                                                                                                                                                                                                                                                                 ".title-page { text-align: center; margin-top: 20%; }\n"
                                                                                                                                                                                                                                                                 ".toc-page ol { list-style-type: none; padding-left: 1.2em; }\n"
                                                                                                                                                                                                                                                                 ".toc-page > ol { padding-left: 0; }\n"
@@ -1006,6 +1176,37 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                                                                                                                                 for (const auto& ch : pt.chapters) {
                                                                                                                                                                                                                                                                 emit_chapter_file(ch);
                                                                                                                                                                                                                                                                 }
+                                                                                                                                                                                                                                                                }
+
+                                                                                                                                                                                                                                                                if (!book.bib_entries.empty()) {
+                                                                                                                                                                                                                                                                std::vector<Footnote> bib_fns;
+                                                                                                                                                                                                                                                                std::ostringstream bib_html;
+                                                                                                                                                                                                                                                                bib_html << xhtml_header("Библиография");
+                                                                                                                                                                                                                                                                bib_html << "  <h1>Библиография</h1>\n";
+                                                                                                                                                                                                                                                                for (const auto& entry : book.bib_entries) {
+                                                                                                                                                                                                                                                                std::string entry_html = latex_inline_to_xhtml(entry.raw_tex, "bib", &bib_fns, &book);
+                                                                                                                                                                                                                                                                bib_html << "  <p class=\"bib-item\" id=\"bib-" << xml_escape(entry.key) << "\">["
+                                                                                                                                                                                                                                                                << entry.number << "] " << entry_html << "</p>\n";
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                if (!bib_fns.empty()) {
+                                                                                                                                                                                                                                                                bib_html << "\n  <section epub:type=\"footnotes\" class=\"footnotes\">\n";
+                                                                                                                                                                                                                                                                bib_html << "    <hr />\n";
+                                                                                                                                                                                                                                                                bib_html << "    <ol>\n";
+                                                                                                                                                                                                                                                                for (const auto& fn : bib_fns) {
+                                                                                                                                                                                                                                                                std::string ref_id = "fnref-bib-" + std::to_string(fn.number);
+                                                                                                                                                                                                                                                                std::string fn_id  = "fn-bib-"    + std::to_string(fn.number);
+                                                                                                                                                                                                                                                                std::string fn_html = latex_inline_to_xhtml(fn.raw_tex, "bib", nullptr, &book);
+                                                                                                                                                                                                                                                                bib_html << "      <li id=\"" << fn_id << "\" epub:type=\"footnote\">"
+                                                                                                                                                                                                                                                                << fn_html
+                                                                                                                                                                                                                                                                << " <a href=\"#" << ref_id << "\" epub:type=\"backlink\">&#8617;</a></li>\n";
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                bib_html << "    </ol>\n";
+                                                                                                                                                                                                                                                                bib_html << "  </section>\n";
+                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                bib_html << xhtml_footer();
+                                                                                                                                                                                                                                                                write_file(out_dir / "OEBPS/bibliography.xhtml", bib_html.str());
+
+                                                                                                                                                                                                                                                                items.push_back({"bibliography", "bibliography.xhtml", "Библиография", 2});
                                                                                                                                                                                                                                                                 }
 
                                                                                                                                                                                                                                                                 for (const auto& img : book.images) {
@@ -1260,7 +1461,10 @@ static bool read_braced_group(const std::string& s, size_t open_brace_pos,
                                                                                                                                                                                                                                                                 std::string expanded = expand_inputs(raw, base_dir, base_dir, stack);
                                                                                                                                                                                                                                                                 std::string cleaned = strip_unwanted_macros(expanded);
 
-                                                                                                                                                                                                                                                                Book book = parse_book(cleaned);
+                                                                                                                                                                                                                                                                std::vector<BibEntry> bib_entries;
+                                                                                                                                                                                                                                                                std::string without_bib = extract_and_parse_bibliography(cleaned, bib_entries);
+
+                                                                                                                                                                                                                                                                Book book = parse_book(without_bib, std::move(bib_entries));
                                                                                                                                                                                                                                                                 emit_epub_dir(book, out_dir);
                                                                                                                                                                                                                                                                 pack_epub_zip(out_dir, out_epub);
 
